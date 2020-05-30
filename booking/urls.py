@@ -10,5 +10,8 @@ urlpatterns = [
     path('staff/<int:pk>/calendar/', views.StaffCalendar.as_view(),
          name='calendar'),
     path('staff/<int:pk>/calendar/<int:year>/<int:month>/<int:day>',
-         views.StaffCalendar.as_view(), name='calendar')
+         views.StaffCalendar.as_view(), name='calendar'),
+    path('staff/<int:pk>/booking/<int:year>/<int:month>/<int:day>/<int:hour>/',
+         views.Booking.as_view(), name='booking')
+
 ]
