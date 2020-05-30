@@ -1,12 +1,15 @@
 import datetime
 from django.conf import settings
+from django.core.exceptions import PermissionDenied
 from django.contrib import messages
 from django.contrib.auth import get_user_model
 from django.contrib.auth.mixins import LoginRequiredMixin, UserPassesTestMixin
 from django.db.models import Q
 from django.shortcuts import render, get_object_or_404, redirect
+from django.urls import reverse_lazy
 from django.utils import timezone
 from django.views import generic
+from django.views.decorators.http import require_POST
 from .models import Store, Staff, Schedule
 
 
@@ -19,6 +22,22 @@ class OnlyUserMixin(UserPassesTestMixin):
     def test_func(self):
         return self.kwargs['pk'] == \
                self.request.user.pk or self.request.user.is_superuser
+
+
+class OnlyStaffMixin(UserPassesTestMixin):
+    raise_exception = True
+
+    def test_func(self):
+        staff = get_object_or_404(Staff, pk=self.kwargs['pk'])
+        return staff.user == self.request.user or self.request.user.is_superuser
+
+
+class OnlyScheduleMixin(UserPassesTestMixin):
+    raise_exception = True
+
+    def test_func(self):
+        schedule = get_object_or_404(Schedule, pk=self.kwargs['pk'])
+        return schedule.staff.user == self.request.user or self.request.user.is_superuser
 
 
 class StoreList(generic.ListView):
@@ -73,9 +92,14 @@ class StaffCalendar(generic.TemplateView):
             calendar[hour] = row
 
         # カレンダー表示する最初と最後の日時の間にある予約を取得する
-        start_time = datetime.datetime.combine(start_day, datetime.time(hour=9, minute=0, second=0))
-        end_time = datetime.datetime.combine(end_day, datetime.time(hour=9, minute=0, second=0))
-        for schedule in Schedule.objects.filter(staff=staff).exclude(Q(start__gt=end_time)|Q(end__lt=start_time)):
+        start_time = datetime.datetime.combine(start_day,
+                                               datetime.time(hour=9,
+                                                             minute=0,second=0))
+        end_time = datetime.datetime.combine(end_day,
+                                             datetime.time(hour=9,
+                                                           minute=0, second=0))
+        for schedule in Schedule.objects.filter(staff=staff).exclude(
+                Q(start__gt=end_time)|Q(end__lt=start_time)):
             local_dt = timezone.localtime(schedule.start)
             booking_date = local_dt.date()
             booking_hour = local_dt.hour
@@ -148,9 +172,65 @@ class MyPageWithPk(OnlyUserMixin, generic.TemplateView):
         return context
 
 
+class MyPageCalendar(OnlyStaffMixin, StaffCalendar):
+    template_name = 'booking/my_page_calendar.html'
 
 
+class MyPageDayDetail(OnlyStaffMixin, generic.TemplateView):
+    template_name = 'booking/my_page_day_detail.html'
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        pk = self.kwargs['pk']
+        staff = get_object_or_404(Staff, pk=pk)
+        year = self.kwargs.get('year')
+        month = self.kwargs.get('month')
+        day = self.kwargs.get('day')
+        date = datetime.date(year=year, month=month, day=day)
+
+        # 9時から17時まで1時間刻みのカレンダーを作る
+        calendar = {}
+        for hour in range (9, 18):
+            calendar[hour] = []
+
+        # カレンダー表示する最初と最後の日時の間にある予約を取得する
+        start_time = datetime.datetime.combine(date,
+                                               datetime.time(hour=9, minute=0,
+                                                             second=0))
+        end_time = datetime.datetime.combine(date,
+                                             datetime.time(hour=17, minute=0,
+                                                           second=0))
+        for schedule in Schedule.objects.filter(staff=staff).exclude(
+                Q(start__gt=end_time) | Q(end__lt=start_time)):
+            local_dt = timezone.localtime(schedule.start)
+            booking_date = local_dt.date()
+            booking_hour = local_dt.hour
+            if booking_hour in calendar:
+                calendar[booking_hour].append(schedule)
+
+        context['calendar'] = calendar
+        context['staff'] = staff
+        return context
 
 
+class MyPageSchedule(OnlyScheduleMixin, generic.UpdateView):
+    model = Schedule
+    fields = ('start', 'end', 'name')
+    success_url = reverse_lazy('booking:my_page')
 
 
+class MyPageScheduleDelete(OnlyScheduleMixin, generic.DeleteView):
+    model = Schedule
+    success_url = reverse_lazy('booking:my_page')
+
+
+@require_POST
+def my_page_holiday_add(request, pk, year, month, day, hour):
+    staff = get_object_or_404(Staff, pk=pk)
+    if staff.user == request.user or request.user.is_superuser:
+        start = datetime.datetime(year=year, month=month, day=day, hour=hour)
+        end = datetime.datetime(year=year, month=month, day=day, hour=hour + 1)
+        Schedule.objects.create(staff=staff, start=start, end=end, name='休暇(システムによる追加)')
+        return redirect('booking:my_page_day_detail', pk=pk, year=year, month=month, day=day)
+
+    raise PermissionDenied
