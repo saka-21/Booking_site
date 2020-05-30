@@ -1,13 +1,24 @@
 import datetime
 from django.conf import settings
 from django.contrib import messages
+from django.contrib.auth import get_user_model
+from django.contrib.auth.mixins import LoginRequiredMixin, UserPassesTestMixin
 from django.db.models import Q
 from django.shortcuts import render, get_object_or_404, redirect
 from django.utils import timezone
 from django.views import generic
 from .models import Store, Staff, Schedule
 
-# Create your views here.
+
+User = get_user_model()
+
+
+class OnlyUserMixin(UserPassesTestMixin):
+    raise_exception = True
+
+    def test_func(self):
+        return self.kwargs['pk'] == \
+               self.request.user.pk or self.request.user.is_superuser
 
 
 class StoreList(generic.ListView):
@@ -101,7 +112,7 @@ class Booking(generic.CreateView):
         hour = self.kwargs.get('hour')
         start = datetime.datetime(year=year, month=month, day=day, hour=hour)
         end = datetime.datetime(year=year, month=month, day=day, hour=hour + 1)
-        if Schedule.objects.filter(staff=staff, start=start).exist():
+        if Schedule.objects.filter(staff=staff, start=start).exists():
             messages.error(self.request, 'すみません、入れ違いで予約がありました。別の日時はどうですか。')
         else:
             schedule = form.save(commit=False)
@@ -109,7 +120,33 @@ class Booking(generic.CreateView):
             schedule.start = start
             schedule.end = end
             schedule.save()
-        return redirect('booking/calendar', pk=staff.pk, year=year, month=month, day=day)
+        return redirect('booking:calendar', pk=staff.pk, year=year, month=month,
+                        day=day)
+
+
+class MyPage(LoginRequiredMixin, generic.TemplateView):
+    template_name = 'booking/my_page.html'
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context['staff_list'] = \
+            Staff.objects.filter(user=self.request.user).order_by('name')
+        context['schedule_list'] = \
+            Schedule.objects.filter(staff__user=self.request.user,
+                                    start__gte=timezone.now()).order_by('name')
+        return context
+
+
+class MyPageWithPk(OnlyUserMixin, generic.TemplateView):
+    template_name = 'booking/my_page.html'
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context['user'] = get_object_or_404(User, pk=self.kwargs['pk'])
+        context['staff_list'] = Staff.objects.filter(user__pk=self.kwargs['pk']).order_by('name')
+        context['schedule_list'] = Schedule.objects.filter(staff__user__pk=self.kwargs['pk'], start__gte=timezone.now()).order_by('name')
+        return context
+
 
 
 
